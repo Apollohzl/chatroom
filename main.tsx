@@ -248,7 +248,7 @@ const Layout = ({ title, children }: PropsWithChildren<{ title: string }>) => {
 }
 
 app.get('/', (c: Context) => {
-  return c.html(<Layout title={`Apollo and Nahida 's HZL chat room`}>
+  return c.html(<Layout title={`小黄 and Nahida 's HZL chat room`}>
     <div class="control-panel">
       <span id="status" data-connected="false">
         <span id="seconds">0</span>s
