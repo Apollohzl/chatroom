@@ -1,0 +1,21 @@
+# 忽略依赖缓存和编译缓存
+deno.lock
+deno_dir/
+.DS_Store
+
+# VSCode 配置
+.vscode/
+
+# 日志文件
+*.log
+
+# 环境变量
+.env
+.env.*
+
+# 测试覆盖率
+coverage/
+
+# 其他临时文件
+*.tmp
+*.swp
