@@ -139,6 +139,12 @@ const Layout = ({ title, children }: PropsWithChildren<{ title: string }>) => {
         background-color: var(--danger-color);
         color: white;
       }
+      #logout-area {
+        display: flex;
+        justify-content: flex-end; /* 直接让内容靠右 */
+        align-items: center;
+        gap: 1rem; /* 保持按钮和用户名的间距 */
+      }
 
       #logout-btn:hover {
         opacity: 0.9;
