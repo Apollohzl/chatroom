@@ -15,10 +15,7 @@ const Layout = ({ title, children }: PropsWithChildren<{ title: string }>) => {
     <link rel="stylesheet" href="/static/css/home.css"></link>
     <body>
       <h2>
-        <a href="">apollo小黄</a>
-         and 
-        <a href="">Nahida</a>
-        's chat room
+        <div onclick="openn('h')">apollo小黄</div> and <div onclick="openn('n')">Nahida</div> chat room
       </h2>
       {children}
       
@@ -83,7 +80,9 @@ app.get(
           } else if (data.type === 'logout') {
             ws.close()
           }
-        } catch { }
+        } catch {
+          console.log('Invalid message:', event.data.toString())
+         }
       },
       onClose: (event, ws) => {
         if (clients.has(ws)) {
@@ -94,6 +93,7 @@ app.get(
       },
       onError: (event, ws) => {
         clients.delete(ws)
+        console.log('WebSocket error:', event)
         broadcastUsers()
       }
     }

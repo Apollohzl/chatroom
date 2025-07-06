@@ -67,7 +67,7 @@ $seconds.textContent = seconds
 
 function connect() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-ws = new WebSocket(protocol + '://' + location.host + '/ws')
+  ws = new WebSocket(protocol + '://' + location.host + '/ws')
   
   ws.onopen = () => {
   ws.send(JSON.stringify({ type: 'login', user: username }))
@@ -76,54 +76,61 @@ ws = new WebSocket(protocol + '://' + location.host + '/ws')
   
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data)
-if (data.type === 'msg' || data.type === 'system') {
-  renderMsg(data)
-} else if (data.type === 'users') {
-  $users.textContent = data.users.join(', ')
-}
+    if (data.type === 'msg' || data.type === 'system') {
+      renderMsg(data)
+    } else if (data.type === 'users') {
+      $users.textContent = data.users.join(', ')
+    }
   }
   
   ws.onclose = () => {
-  $msg.disabled = true
+    $msg.disabled = true
     $loginArea.style.display = 'flex'
-$logoutArea.style.display = 'none'
-$users.textContent = ''
-$chat.innerHTML = ''
-updateStatus(false)
+    $logoutArea.style.display = 'none'
+    $users.textContent = ''
+    $chat.innerHTML = ''
+    updateStatus(false)
   }
 }
 
 $loginBtn.onclick = () => {
   username = $username.value.trim()
   if (!username) return alert('请输入用户名')
-localStorage.setItem('chat-username', username)
-connect()
-$loginArea.style.display = 'none'
-$logoutArea.style.display = 'flex'
-$currentUser.textContent = username
-$msg.disabled = false
-$msg.focus()
+  localStorage.setItem('chat-username', username)
+  connect()
+  $loginArea.style.display = 'none'
+  $logoutArea.style.display = 'flex'
+  $currentUser.textContent = username
+  $msg.disabled = false
+  $msg.focus()
 }
 
 $logoutBtn.onclick = () => {
   if (ws) {
-  ws.send(JSON.stringify({ type: 'logout' }))
+    ws.send(JSON.stringify({ type: 'logout' }))
     ws.close()
   }
-localStorage.removeItem('chat-username')
-$loginArea.style.display = 'flex'
-$logoutArea.style.display = 'none'
-$msg.disabled = true
-$username.value = ''
-username = ''
-$users.textContent = ''
-$chat.innerHTML = ''
-updateStatus(false)
+  localStorage.removeItem('chat-username')
+  $loginArea.style.display = 'flex'
+  $logoutArea.style.display = 'none'
+  $msg.disabled = true
+  $username.value = ''
+  username = ''
+  $users.textContent = ''
+  $chat.innerHTML = ''
+  updateStatus(false)
 }
 
 $msg.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && $msg.value.trim() && ws && ws.readyState === 1) {
-  ws.send(JSON.stringify({ type: 'msg', text: $msg.value }))
+    ws.send(JSON.stringify({ type: 'msg', text: $msg.value }))
     $msg.value = ''
   }
 })
+function openn(msg){
+  if (msg === 'h'){
+    window.open("https://space.bilibili.com/1519941537", '_blank')
+  }else if (msg === 'n'){
+    window.open("https://space.bilibili.com/2140306819", '_blank')
+  }
+}
