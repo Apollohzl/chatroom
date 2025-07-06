@@ -18,7 +18,6 @@ const Layout = ({ title, children }: PropsWithChildren<{ title: string }>) => {
         <div onclick="openn('h')">apollo小黄</div> and <div onclick="openn('n')">Nahida</div> chat room
       </h2>
       {children}
-      
       <script src="/static/js/home.js"></script>
     </body>
     <footer class="copyright-footer">
