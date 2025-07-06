@@ -14,7 +14,12 @@ const Layout = ({ title, children }: PropsWithChildren<{ title: string }>) => {
     <title>{title}</title>
     <link rel="stylesheet" href="/static/css/home.css"></link>
     <body>
-      <h2>{title}</h2>
+      <h2>
+        <a href="">apollo小黄</a>
+         and 
+        <a href="">Nahida</a>
+        's chat room
+      </h2>
       {children}
       
       <script src="/static/js/home.js"></script>
