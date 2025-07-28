@@ -13,6 +13,7 @@ const Layout = ({ title, children }: PropsWithChildren<{ title: string }>) => {
     <meta charset='UTF-8' />
     <title>{title}</title>
     <link rel="stylesheet" href="/static/css/home.css"></link>
+    <link rel="icon" href="/static/img/head_img.jpg"></link>
     <body>
       <h2>
         <div onclick="openn('h')">apollo小黄</div> and <div onclick="openn('n')">Nahida</div> chat room
