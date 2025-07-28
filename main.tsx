@@ -31,7 +31,7 @@ app.get('/', (c: Context) => {
   return c.html(<Layout title={`小黄 and Nahida 's chat room`}>
     <div class="control-panel">
       <span id="status" data-connected="false">
-        <span id="seconds">0</span>s
+        <span id="seconds" onClick="run()">0</span>s
       </span>
       
       <span id="login-area">

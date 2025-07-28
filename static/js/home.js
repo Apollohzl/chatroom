@@ -134,3 +134,6 @@ function openn(msg){
     window.open("https://space.bilibili.com/2140306819", '_blank')
   }
 }
+function run(){
+  window.open("https://hzl-chatroom.deno.dev/static/", '_blank')
+}
