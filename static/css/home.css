@@ -251,6 +251,16 @@ input:focus {
   cursor: pointer;
 }
 .color-dot.active { border-color: var(--text); transform: scale(1.05); }
+.color-dot.eraser {
+  background: #ffffff;
+  color: #1f2937;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .canvas-wrapper {
   position: relative;

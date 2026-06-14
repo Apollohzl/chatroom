@@ -266,7 +266,7 @@ app.get('/room/:id', (c: Context) => {
         <main class="game-main">
           <section class="canvas-section">
             <div class="canvas-toolbar" id="canvas-toolbar" style={{ display: 'none' }}>
-              <span>画笔颜色：</span>
+              <span>画笔：</span>
               <div class="color-palette" id="color-palette">
                 <button data-color="#1f2937" class="color-dot active" style={{ background: '#1f2937' }} />
                 <button data-color="#ef4444" class="color-dot" style={{ background: '#ef4444' }} />
@@ -275,6 +275,7 @@ app.get('/room/:id', (c: Context) => {
                 <button data-color="#3b82f6" class="color-dot" style={{ background: '#3b82f6' }} />
                 <button data-color="#8b5cf6" class="color-dot" style={{ background: '#8b5cf6' }} />
                 <button data-color="#ec4899" class="color-dot" style={{ background: '#ec4899' }} />
+                <button data-color="eraser" class="color-dot eraser" title="橡皮擦">⌫</button>
               </div>
               <button id="clear-canvas-btn" class="ghost">清空画板</button>
             </div>

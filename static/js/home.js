@@ -359,14 +359,21 @@
 
     // 本地绘制并发送 stroke
     function drawLocal(x1, y1, x2, y2) {
-      ctx.lineWidth = 5
+      const isEraser = boardState.color === 'eraser'
+      ctx.save()
+      ctx.lineWidth = isEraser ? 20 : 5
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
-      ctx.strokeStyle = boardState.color
+      if (isEraser) {
+        ctx.globalCompositeOperation = 'destination-out'
+      } else {
+        ctx.strokeStyle = boardState.color
+      }
       ctx.beginPath()
       ctx.moveTo(x1, y1)
       ctx.lineTo(x2, y2)
       ctx.stroke()
+      ctx.restore()
 
       // 发送 stroke 到服务端
       send({
@@ -384,14 +391,21 @@
       const x2 = parseFloat(parts[2])
       const y2 = parseFloat(parts[3])
       const color = parts[4]
-      ctx.lineWidth = 5
+      const isEraser = color === 'eraser'
+      ctx.save()
+      ctx.lineWidth = isEraser ? 20 : 5
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
-      ctx.strokeStyle = color
+      if (isEraser) {
+        ctx.globalCompositeOperation = 'destination-out'
+      } else {
+        ctx.strokeStyle = color
+      }
       ctx.beginPath()
       ctx.moveTo(x1, y1)
       ctx.lineTo(x2, y2)
       ctx.stroke()
+      ctx.restore()
     }
     function clearCanvas() {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
