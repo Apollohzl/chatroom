@@ -35,27 +35,37 @@
       ws.conn.send(JSON.stringify(obj))
     }
   }
+  // 标志：本连接是否已经收到 login_ok
+  const connState = { loggedIn: false, autoJoinRoomId: null }
+
   function connect(onOpen) {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
     const conn = new WebSocket(protocol + '://' + location.host + '/ws')
+    connState.loggedIn = false
     conn.onopen = function () {
       if (onOpen) onOpen(conn)
     }
-    conn.onmessage = onMessage
+    conn.onmessage = function (evt) {
+      let data
+      try { data = JSON.parse(evt.data) } catch (e) { return }
+      if (!data) return
+      // 一旦收到 login_ok：
+      // - 如果大厅：允许按钮生效
+      // - 如果游戏页：自动 join_room
+      if (data.type === 'login_ok') {
+        connState.loggedIn = true
+        if (connState.autoJoinRoomId) {
+          send({ type: 'join_room', roomId: connState.autoJoinRoomId })
+        }
+      }
+      onMessage(evt)
+    }
     conn.onclose = function () {
       showSystem('连接已断开，正在重连…')
       setTimeout(function () {
         connect(function () {
-          // 重连后自动登录 & 重新进入原房间
-          if (user.name) {
-            send({ type: 'login', user: user.name })
-            if (currentRoomId) {
-              // 简单策略：给一点点时间让服务端接受 login，再请求加入
-              setTimeout(function () {
-                send({ type: 'join_room', roomId: currentRoomId })
-              }, 120)
-            }
-          }
+          // 重连后自动登录
+          if (user.name) send({ type: 'login', user: user.name })
         })
       }, 1200)
     }
@@ -131,10 +141,12 @@
     })
 
     createBtn.addEventListener('click', function () {
+      if (!connState.loggedIn) return alert('连接还在建立中，请稍后再试…')
       send({ type: 'create_room' })
     })
 
     joinBtn.addEventListener('click', function () {
+      if (!connState.loggedIn) return alert('连接还在建立中，请稍后再试…')
       const id = joinId.value.trim()
       if (!id) return alert('请输入房间 ID')
       send({ type: 'join_room', roomId: id })
@@ -145,6 +157,7 @@
     })
 
     searchBtn.addEventListener('click', function () {
+      if (!connState.loggedIn) return
       send({ type: 'list_rooms', kw: searchKw.value.trim() })
     })
 
@@ -507,19 +520,14 @@
         const promptName = prompt('请输入你的昵称：')
         if (!promptName || !promptName.trim()) {
           alert('需要昵称才能进入房间，即将返回首页')
-          setTimeout(function () {
-            location.href = '/'
-          }, 800)
+          setTimeout(function () { location.href = '/' }, 800)
           return
         }
         user.name = promptName.trim()
         localStorage.setItem('chat-username', user.name)
       }
+      connState.autoJoinRoomId = currentRoomId
       send({ type: 'login', user: user.name })
-      // 稍等片刻再请求加入房间（服务端需要先处理 login）
-      setTimeout(function () {
-        send({ type: 'join_room', roomId: currentRoomId })
-      }, 120)
     })
   }
 

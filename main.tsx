@@ -369,25 +369,15 @@ function handleDisconnect(ws: WSContext<WebSocket>) {
     const room = rooms.get(info.roomId)
     if (room) {
       room.players.delete(info.user)
-      // 如果房主离开，直接解散房间
-      if (room.host === info.user) {
-        broadcastToRoom(room.id, { type: 'system', text: `房主 ${info.user} 已离开，房间解散。`, time: nowStr() })
-        broadcastToRoom(room.id, { type: 'room_closed', reason: 'host_left' })
-        // 清空房间内所有 client 的 roomId 引用
-        for (const [, ci] of clients) {
-          if (ci.roomId === room.id) ci.roomId = null
-        }
-        rooms.delete(room.id)
-      } else {
-        ensureScore(room, info.user)
+      // 只在该用户没有其他连接时才广播"离开"消息
+      const stillOnline = Array.from(clients.values()).some((ci) => ci.user === info.user && ci.roomId === info.roomId)
+      if (!stillOnline) {
         const sysMsg: ChatMessage = { user: 'system', text: `${info.user} 离开了房间`, time: nowStr(), isSystem: true }
         room.chat.push(sysMsg)
         broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
-        broadcastToRoom(room.id, {
-          type: 'room_state',
-          state: publicRoomState(room),
-        })
       }
+      // 始终同步最新状态
+      broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
     }
   }
 
@@ -509,9 +499,19 @@ function handleJoinRoom(ws: WSContext<WebSocket>, data: { roomId: string }) {
     send(ws, { type: 'error', text: '请提供房间 ID', time: nowStr() })
     return
   }
-  if (info.roomId) {
-    send(ws, { type: 'error', text: '你已经在一个房间中', time: nowStr() })
+  // 如果该连接已经在目标房间里，直接返回状态即可（支持刷新后自动重建）
+  if (info.roomId === roomId) {
+    const room = rooms.get(roomId)
+    if (room) {
+      send(ws, { type: 'room_joined', roomId, isHost: info.user === room.host })
+      send(ws, { type: 'room_state', state: publicRoomState(room) })
+    }
     return
+  }
+  // 如果之前在别的房间，先离开
+  if (info.roomId) {
+    const prev = rooms.get(info.roomId)
+    if (prev) prev.players.delete(info.user)
   }
   const room = rooms.get(roomId)
   if (!room) {
@@ -521,13 +521,17 @@ function handleJoinRoom(ws: WSContext<WebSocket>, data: { roomId: string }) {
   room.players.add(info.user)
   ensureScore(room, info.user)
   info.roomId = roomId
-  const sysMsg: ChatMessage = { user: 'system', text: `${info.user} 加入了房间`, time: nowStr(), isSystem: true }
-  room.chat.push(sysMsg)
-  // 告知本人
-  send(ws, { type: 'room_joined', roomId, isHost: info.user === room.host })
+  // 告知本人（是否为房主：房主重连也能恢复）
+  const isHost = info.user === room.host
+  send(ws, { type: 'room_joined', roomId, isHost })
   send(ws, { type: 'room_state', state: publicRoomState(room) })
-  // 告知房间其他人
-  broadcastToRoom(roomId, { type: 'chat_msg', msg: sysMsg })
+  // 只在用户是新加入时（而不是刷新重连）广播"加入"消息
+  const alreadyPresent = Array.from(clients.values()).some((ci) => ci !== info && ci.user === info.user && ci.roomId === roomId)
+  if (!alreadyPresent) {
+    const sysMsg: ChatMessage = { user: 'system', text: `${info.user} 加入了房间`, time: nowStr(), isSystem: true }
+    room.chat.push(sysMsg)
+    broadcastToRoom(roomId, { type: 'chat_msg', msg: sysMsg })
+  }
   broadcastToRoom(roomId, { type: 'room_state', state: publicRoomState(room) })
   broadcastHallList()
 }
