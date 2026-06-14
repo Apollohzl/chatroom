@@ -10,6 +10,7 @@
   const user = { name: localStorage.getItem('chat-username') || '' }
   let currentRoomId = null
   let isHost = false
+  let stateHost = ''
 
   // ---------- 颜色（画板状态） ----------
   const boardState = {
@@ -101,6 +102,7 @@
     const searchBtn = $('search-btn')
     const roomList = $('room-list')
     const roomCount = $('room-count')
+    const onlineCountEl = $('online-count')
 
     // 已经有用户名：自动登录
     if (user.name) {
@@ -240,8 +242,6 @@
     const hostAnswerBar = $('host-answer-bar')
     const answerInput = $('answer-input')
     const startDrawingBtn = $('start-drawing-btn')
-    const playerAnswerBar = $('player-answer-bar')
-    const playerAnswer = $('player-answer')
     const leaderboard = $('leaderboard')
     const chatBox = $('chat')
     const chatInput = $('chat-input')
@@ -295,23 +295,16 @@
     startDrawingBtn.addEventListener('click', function () {
       const val = answerInput.value.trim()
       if (!val) return alert('请先填写一个答案')
+      // loading 状态
+      startDrawingBtn.disabled = true
+      startDrawingBtn.textContent = '正在开启…'
       send({ type: 'set_answer', answer: val })
       send({ type: 'start_drawing' })
     })
 
-    // 玩家：答案输入
-    playerAnswer.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        const v = playerAnswer.value.trim()
-        if (!v) return
-        send({ type: 'submit_answer', text: v })
-        playerAnswer.value = ''
-      }
-    })
-
     // 聊天
     chatSend.addEventListener('click', function () {
-      const v = chatInput.value.trim()
+      const v = chatInput.value.trim().slice(0, 50)
       if (!v) return
       send({ type: 'chat', text: v })
       chatInput.value = ''
@@ -408,6 +401,7 @@
     function renderState(state) {
       roomHostEl.textContent = state.host
       playerCountEl.textContent = state.players.length
+      stateHost = state.host // 供 appendChat 判断 [房主] 前缀
       // 游戏状态标签
       if (state.state === 'drawing') {
         gameStateEl.textContent = '进行中'
@@ -494,13 +488,15 @@
     }
 
     function appendChat(m) {
+      if (m.inChat === false) return
       const div = document.createElement('div')
       div.className = 'message ' + (m.isSystem ? 'system-message' : 'other-message')
       if (m.isCorrect) div.classList.add('correct')
       if (m.isSystem) {
         div.textContent = m.text
       } else {
-        div.textContent = m.user + '：' + m.text
+        const prefix = m.user === stateHost ? '[房主]' : ''
+        div.textContent = (prefix ? prefix + ' ' : '') + m.user + '：' + m.text
       }
       chatBox.appendChild(div)
       chatBox.scrollTop = chatBox.scrollHeight
@@ -546,16 +542,27 @@
     // 登录成功：保存用户名
     if (data.type === 'login_ok') {
       user.name = data.user
+      if (onlineCountEl && data.onlineCount !== undefined) {
+        onlineCountEl.textContent = data.onlineCount
+      }
     }
 
     // 首页相关
     if (data.type === 'room_list' && window.__updateRoomList) {
       window.__updateRoomList(data.rooms)
+      if (onlineCountEl && data.onlineCount !== undefined) {
+        onlineCountEl.textContent = data.onlineCount
+      }
     }
 
     // 通用：错误
     if (data.type === 'error') {
       alert(data.text || '发生错误')
+      // 恢复房主按钮
+      if (isHost && startDrawingBtn) {
+        startDrawingBtn.disabled = false
+        startDrawingBtn.textContent = '确认并开启画板'
+      }
     }
     if (data.type === 'system') {
       showSystem(data.text)
@@ -576,6 +583,11 @@
     // 房间状态（游戏页）
     if (data.type === 'room_state' && window.__renderState) {
       window.__renderState(data.state)
+      // drawing 状态时恢复按钮（可能是刚完成 start_drawing）
+      if (isHost && data.state && data.state.state === 'drawing') {
+        startDrawingBtn.disabled = false
+        startDrawingBtn.textContent = '确认并开启画板'
+      }
     }
 
     // 画板 stroke / clear

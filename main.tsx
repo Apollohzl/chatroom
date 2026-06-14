@@ -63,6 +63,7 @@ type ChatMessage = {
   time: string
   isSystem?: boolean
   isCorrect?: boolean
+  inChat?: boolean // false：不显示在聊天区
 }
 
 type Room = {
@@ -223,7 +224,7 @@ app.get('/', (c: Context) => {
           <div class="hall-grid">
             <div class="hall-grid-head">
               <h3>在线房间</h3>
-              <small><span id="room-count">0</span> 个房间</small>
+              <small><span id="room-count">0</span> 个房间 · <span id="online-count">-</span> 人在线</small>
             </div>
             <div id="room-list" class="room-list">
               <div class="empty">暂无房间，创建一个吧～</div>
@@ -290,12 +291,6 @@ app.get('/room/:id', (c: Context) => {
               <small class="hint">玩家会在输入正确答案后 +1 分，画板将在命中后锁定。</small>
             </div>
 
-            {/* 答案输入区（玩家） */}
-            <div id="player-answer-bar" class="answer-bar" style={{ display: 'none' }}>
-              <label>输入你的答案：</label>
-              <input id="player-answer" placeholder="输入后按回车提交" autocomplete="off" />
-              <small class="hint">第一个猜对的玩家 +1 分。</small>
-            </div>
           </section>
 
           <aside class="side-section">
@@ -313,7 +308,7 @@ app.get('/room/:id', (c: Context) => {
                 <div class="message system-message">欢迎进入房间，聊天与答案都实时同步。</div>
               </div>
               <div class="chat-input">
-                <input id="chat-input" placeholder="输入消息 / 答案" autocomplete="off" />
+                <input id="chat-input" placeholder="输入消息 / 答案" maxlength={50} autocomplete="off" />
                 <button id="chat-send" class="primary">发送</button>
               </div>
             </div>
@@ -445,12 +440,12 @@ function handleLogin(ws: WSContext<WebSocket>, data: { user: string }) {
     }
   }
   clients.set(ws, { user, roomId: null, ws })
-  send(ws, { type: 'login_ok', user })
+  send(ws, { type: 'login_ok', user, onlineCount: clients.size })
   broadcastHallList()
 }
 
 function broadcastHallList(kw?: string, toWs?: WSContext<WebSocket>) {
-  const payload = { type: 'room_list', rooms: publicRoomList(kw) }
+  const payload = { type: 'room_list', rooms: publicRoomList(kw), onlineCount: clients.size }
   if (toWs) {
     send(toWs, payload)
     return
@@ -612,6 +607,7 @@ function handleStartDrawing(ws: WSContext<WebSocket>) {
     text: '本轮开始！请在输入框中猜测答案。',
     time: nowStr(),
     isSystem: true,
+    inChat: false,
   }
   room.chat.push(sysMsg)
   broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
@@ -673,6 +669,7 @@ function tryAnswer(room: Room, user: string, text: string) {
     time: nowStr(),
     isSystem: true,
     isCorrect: true,
+    inChat: false,
   }
   room.chat.push(sysOk)
   broadcastToRoom(room.id, { type: 'chat_msg', msg: sysOk })
