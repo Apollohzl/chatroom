@@ -434,14 +434,12 @@
         hostControls.style.display = 'flex'
         canvasToolbar.style.display = 'flex'
         hostAnswerBar.style.display = 'flex'
-        playerAnswerBar.style.display = 'none'
         // 房主能在 drawing 状态下绘画
         boardState.canDraw = state.state === 'drawing'
       } else {
         hostControls.style.display = 'none'
         canvasToolbar.style.display = 'none'
         hostAnswerBar.style.display = 'none'
-        playerAnswerBar.style.display = 'flex'
         boardState.canDraw = false // 玩家不能绘画
       }
 
