@@ -627,37 +627,13 @@ function handleSubmitAnswer(ws: WSContext<WebSocket>, data: { text: string }) {
   const text = String(data.text || '').trim()
   if (!text) return
 
-  // 作为聊天消息广播（所有人都能看到）
+  // 1) 先作为聊天消息广播（房主也能看到玩家在猜什么）
   const chatMsg: ChatMessage = { user: info.user, text, time: nowStr() }
   room.chat.push(chatMsg)
   broadcastToRoom(room.id, { type: 'chat_msg', msg: chatMsg })
 
-  // 判定：只有 drawing 状态、非房主、与答案一致才算答对；并且一轮只接受第一个正确者
-  if (room.state === 'drawing' && room.answer && info.user !== room.host && !room.lastWinner) {
-    const ans = room.answer.trim().toLowerCase()
-    if (text.trim().toLowerCase() === ans) {
-      room.lastWinner = info.user
-      // 加分
-      ensureScore(room, info.user)
-      const entry = room.scoreboard.find((s) => s.user === info.user)!
-      entry.score += 1
-      // 排序
-      room.scoreboard.sort((a, b) => b.score - a.score)
-      // 锁定画板，结束本轮
-      room.state = 'roundOver'
-      const sysOk: ChatMessage = {
-        user: 'system',
-        text: `🎉 ${info.user} 猜对了！答案是「${room.answer}」，+1 分。`,
-        time: nowStr(),
-        isSystem: true,
-        isCorrect: true,
-      }
-      room.chat.push(sysOk)
-      broadcastToRoom(room.id, { type: 'chat_msg', msg: sysOk })
-      broadcastToRoom(room.id, { type: 'round_over', winner: info.user, answer: room.answer })
-      broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
-    }
-  }
+  // 2) 答案判定
+  tryAnswer(room, info.user, text)
 }
 
 function handleChat(ws: WSContext<WebSocket>, data: { text: string }) {
@@ -669,6 +645,39 @@ function handleChat(ws: WSContext<WebSocket>, data: { text: string }) {
   const chatMsg: ChatMessage = { user: info.user, text, time: nowStr() }
   room.chat.push(chatMsg)
   broadcastToRoom(room.id, { type: 'chat_msg', msg: chatMsg })
+
+  // 3) 聊天消息也要做答案判定（猜对同样计分并结束本轮）
+  tryAnswer(room, info.user, text)
+}
+
+// 统一的答案判定：drawing 状态、已有答案、非房主、本轮尚未结束
+function tryAnswer(room: Room, user: string, text: string) {
+  if (room.state !== 'drawing') return
+  if (!room.answer) return
+  if (user === room.host) return
+  if (room.lastWinner) return // 一轮只算第一个
+
+  const ans = room.answer.trim().toLowerCase()
+  if (text.trim().toLowerCase() !== ans) return
+
+  room.lastWinner = user
+  ensureScore(room, user)
+  const entry = room.scoreboard.find((s) => s.user === user)!
+  entry.score += 1
+  room.scoreboard.sort((a, b) => b.score - a.score)
+  room.state = 'roundOver'
+
+  const sysOk: ChatMessage = {
+    user: 'system',
+    text: `🎉 ${user} 猜对了！答案是「${room.answer}」，+1 分。`,
+    time: nowStr(),
+    isSystem: true,
+    isCorrect: true,
+  }
+  room.chat.push(sysOk)
+  broadcastToRoom(room.id, { type: 'chat_msg', msg: sysOk })
+  broadcastToRoom(room.id, { type: 'round_over', winner: user, answer: room.answer })
+  broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
 }
 
 function handleCloseRoom(ws: WSContext<WebSocket>) {
