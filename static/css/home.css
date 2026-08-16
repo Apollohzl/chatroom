@@ -135,6 +135,7 @@ input:focus {
   margin: 0 auto;
 }
 #login-section .input-row input { flex: 1; }
+#login-section .hint { color: var(--muted); font-size: 13px; margin-top: 14px; text-align: center; }
 
 .hall-header {
   display: flex;

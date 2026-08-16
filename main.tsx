@@ -50,6 +50,8 @@ type ClientInfo = {
   user: string
   roomId: string | null
   ws: WSContext<WebSocket>
+  // 心跳时间戳：最后一次收到该连接任何消息的时间
+  lastHeartbeat: number
 }
 
 type ScoreboardEntry = {
@@ -68,11 +70,13 @@ type ChatMessage = {
 
 type Room = {
   id: string
-  host: string
+  // 当前画手（轮流担任，不再是固定房主）
+  currentDrawer: string | null
   players: Set<string>
+  // 进入房间的顺序，用于「轮换到下一位画手」
+  turnOrder: string[]
   state: 'lobby' | 'drawing' | 'roundOver'
   answer: string | null
-  currentDrawer: string | null
   canvasHistory: string
   // 每轮 winner，用于判定之后是否进入下一轮
   lastWinner: string | null
@@ -86,20 +90,37 @@ type Room = {
 // ============================================================
 const app = new Hono()
 const clients = new Map<WSContext<WebSocket>, ClientInfo>()
+
+// 全局唯一的房间：登录即自动进入，无需创建/加入
+const DEFAULT_ROOM_ID = '1'
 const rooms = new Map<string, Room>()
+
+function createDefaultRoom(): Room {
+  return {
+    id: DEFAULT_ROOM_ID,
+    currentDrawer: null,
+    players: new Set<string>(),
+    turnOrder: [],
+    state: 'lobby',
+    answer: null,
+    canvasHistory: '',
+    lastWinner: null,
+    scoreboard: [],
+    chat: [
+      { user: 'system', text: '欢迎来到房间，大家轮流作画猜词吧！', time: nowStr(), isSystem: true },
+    ],
+    createdAt: Date.now(),
+  }
+}
+rooms.set(DEFAULT_ROOM_ID, createDefaultRoom())
+
+// 心跳：超过该时长没有任何消息（心跳）则判定为卡死，清除其个人信息
+const HEARTBEAT_TIMEOUT = 10 * 60 * 1000 // 10 分钟
+const HEARTBEAT_CHECK_INTERVAL = 30 * 1000 // 每 30 秒扫描一次
 
 // ============================================================
 // 工具函数
 // ============================================================
-function genRoomId(): string {
-  // 4 位数字，尽量避免碰撞
-  let id = ''
-  do {
-    id = String(Math.floor(1000 + Math.random() * 9000))
-  } while (rooms.has(id))
-  return id
-}
-
 function nowStr(): string {
   return new Date().toLocaleTimeString()
 }
@@ -119,29 +140,14 @@ function broadcastToRoom(roomId: string, obj: unknown, exceptWs?: WSContext<WebS
   }
 }
 
-function publicRoomList(kw?: string) {
-  const list: Array<{ id: string; host: string; playerCount: number; state: Room['state'] }> = []
-  const lower = (kw || '').trim().toLowerCase()
-  for (const room of rooms.values()) {
-    if (lower && !room.id.includes(lower) && !room.host.toLowerCase().includes(lower)) continue
-    list.push({
-      id: room.id,
-      host: room.host,
-      playerCount: room.players.size,
-      state: room.state,
-    })
-  }
-  // 按创建时间倒序（最近的在前）
-  return list.sort((a, b) => (rooms.get(b.id)!.createdAt - rooms.get(a.id)!.createdAt))
-}
-
 function publicRoomState(room: Room) {
   return {
     id: room.id,
-    host: room.host,
-    players: Array.from(room.players),
-    state: room.state,
+    host: room.currentDrawer, // 兼容前端字段：当前画手
     currentDrawer: room.currentDrawer,
+    players: Array.from(room.players),
+    turnOrder: room.turnOrder,
+    state: room.state,
     canvasHistory: room.canvasHistory,
     scoreboard: room.scoreboard,
     chat: room.chat.slice(-200),
@@ -149,17 +155,19 @@ function publicRoomState(room: Room) {
   }
 }
 
-function getRoomByUser(user: string): Room | null {
-  for (const room of rooms.values()) {
-    if (room.players.has(user) || room.host === user) return room
-  }
-  return null
-}
-
 function ensureScore(room: Room, user: string) {
   if (!room.scoreboard.find((s) => s.user === user)) {
     room.scoreboard.push({ user, score: 0 })
   }
+}
+
+// 计算「下一位画手」：按进入房间顺序，从 fromUser 的下一个开始
+function nextDrawer(room: Room, fromUser: string | null): string | null {
+  const order = room.turnOrder.filter((p) => room.players.has(p))
+  if (order.length === 0) return null
+  const idx = order.indexOf(fromUser ?? '')
+  const nextIdx = idx < 0 ? 0 : (idx + 1) % order.length
+  return order[nextIdx]
 }
 
 // ============================================================
@@ -182,10 +190,10 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
   </html>
 )
 
-// 首页：登录 + 创建/加入房间 + 房间大厅
+// 单页：登录面板 + 游戏区（登录后显示）
 app.get('/', (c: Context) => {
   return c.html(
-    <Layout title="你画我猜 · 大厅">
+    <Layout title="你画我猜 · 单房间版">
       <div id="app">
         {/* 登录面板 */}
         <section id="login-section" class="panel">
@@ -193,128 +201,82 @@ app.get('/', (c: Context) => {
           <p class="subtitle">实时多人协作猜词游戏</p>
           <div class="input-row">
             <input id="username" autocomplete="off" placeholder="输入你的昵称" />
-            <button id="login-btn" class="primary">进入大厅</button>
+            <button id="login-btn" class="primary">进入游戏</button>
           </div>
+          <p class="hint">登录后自动进入唯一房间，大家轮流作画，其他人猜词。</p>
         </section>
 
-        {/* 大厅（登录后显示） */}
-        <section id="hall-section" class="panel hidden">
-          <header class="hall-header">
-            <div>
-              <h2>大厅</h2>
-              <small>
-                你好，<span id="me">—</span>
-              </small>
+        {/* 游戏区（登录后由 JS 取消隐藏） */}
+        <section id="game-section" class="hidden">
+          <header class="game-header">
+            <div class="left">
+              <div class="room-info">
+                房间 <b id="room-id">1</b>
+                <small>
+                  当前画手：<span id="room-host">—</span>
+                </small>
+              </div>
             </div>
-            <button id="logout-btn" class="ghost">退出</button>
+            <div class="center">
+              <span id="game-state" class="state-tag">等待中</span>
+              <small>在线 <span id="player-count">0</span> 人</small>
+            </div>
+            <div class="right">
+              <button class="ghost" id="logout-btn">退出登录</button>
+            </div>
           </header>
 
-          <div class="hall-actions">
-            <button id="create-btn" class="primary">创建房间</button>
-            <div class="join-row">
-              <input id="join-id" placeholder="输入房间 ID 加入" />
-              <button id="join-btn">加入</button>
-            </div>
-            <div class="search-row">
-              <input id="search-kw" placeholder="搜索房间 / 房主昵称" />
-              <button id="search-btn">搜索</button>
-            </div>
-          </div>
+          <main class="game-main">
+            <section class="canvas-section">
+              <div class="canvas-toolbar" id="canvas-toolbar" style={{ display: 'none' }}>
+                <span>画笔：</span>
+                <div class="color-palette" id="color-palette">
+                  <button data-color="#1f2937" class="color-dot active" style={{ background: '#1f2937' }} />
+                  <button data-color="#ef4444" class="color-dot" style={{ background: '#ef4444' }} />
+                  <button data-color="#f59e0b" class="color-dot" style={{ background: '#f59e0b' }} />
+                  <button data-color="#10b981" class="color-dot" style={{ background: '#10b981' }} />
+                  <button data-color="#3b82f6" class="color-dot" style={{ background: '#3b82f6' }} />
+                  <button data-color="#8b5cf6" class="color-dot" style={{ background: '#8b5cf6' }} />
+                  <button data-color="#ec4899" class="color-dot" style={{ background: '#ec4899' }} />
+                  <button data-color="eraser" class="color-dot eraser" title="橡皮擦">⌫</button>
+                </div>
+                <button id="clear-canvas-btn" class="ghost">清空画板</button>
+              </div>
+              <div class="canvas-wrapper">
+                <canvas id="board" width="700" height="700" />
+                <div id="canvas-overlay" class="canvas-overlay">等待画手开始本轮…</div>
+              </div>
 
-          <div class="hall-grid">
-            <div class="hall-grid-head">
-              <h3>在线房间</h3>
-              <small><span id="room-count">0</span> 个房间 · <span id="online-count">-</span> 人在线</small>
-            </div>
-            <div id="room-list" class="room-list">
-              <div class="empty">暂无房间，创建一个吧～</div>
-            </div>
-          </div>
+              {/* 答案输入区（当前画手） */}
+              <div id="host-answer-bar" class="answer-bar" style={{ display: 'none' }}>
+                <label>设置答案（本轮词汇）：</label>
+                <input id="answer-input" placeholder="例如：苹果、闪电、皮卡丘" />
+                <button id="start-drawing-btn" class="primary">确认并开启画板</button>
+                <small class="hint">玩家会在输入正确答案后 +1 分，画板将在命中后锁定。</small>
+              </div>
+            </section>
+
+            <aside class="side-section">
+              <div class="panel leaderboard">
+                <h3>积分排行榜</h3>
+                <ol id="leaderboard">
+                  <li class="empty">暂无数据</li>
+                </ol>
+              </div>
+
+              <div class="panel chat-panel">
+                <h3>弹幕聊天</h3>
+                <div id="chat" class="chat-box">
+                  <div class="message system-message">欢迎进入房间，聊天与答案都实时同步。</div>
+                </div>
+                <div class="chat-input">
+                  <input id="chat-input" placeholder="输入消息 / 答案" maxlength={50} autocomplete="off" />
+                  <button id="chat-send" class="primary">发送</button>
+                </div>
+              </div>
+            </aside>
+          </main>
         </section>
-      </div>
-    </Layout>
-  )
-})
-
-// 游戏页
-app.get('/room/:id', (c: Context) => {
-  const roomId = c.req.param('id')
-  return c.html(
-    <Layout title={`房间 ${roomId} · 你画我猜`}>
-      <div id="game-app" data-room={roomId}>
-        {/* 顶部栏 */}
-        <header class="game-header">
-          <div class="left">
-            <button class="ghost" id="back-btn">← 返回大厅</button>
-            <div class="room-info">
-              房间 <b id="room-id">{roomId}</b>
-              <small>
-                房主：<span id="room-host">—</span>
-              </small>
-            </div>
-          </div>
-          <div class="center">
-            <span id="game-state" class="state-tag">等待中</span>
-            <small>在线 <span id="player-count">0</span> 人</small>
-          </div>
-          <div class="right" id="host-controls" style={{ display: 'none' }}>
-            <button id="close-room-btn" class="danger">关闭房间</button>
-          </div>
-        </header>
-
-        {/* 主体：左侧画板 + 右侧排行榜 */}
-        <main class="game-main">
-          <section class="canvas-section">
-            <div class="canvas-toolbar" id="canvas-toolbar" style={{ display: 'none' }}>
-              <span>画笔：</span>
-              <div class="color-palette" id="color-palette">
-                <button data-color="#1f2937" class="color-dot active" style={{ background: '#1f2937' }} />
-                <button data-color="#ef4444" class="color-dot" style={{ background: '#ef4444' }} />
-                <button data-color="#f59e0b" class="color-dot" style={{ background: '#f59e0b' }} />
-                <button data-color="#10b981" class="color-dot" style={{ background: '#10b981' }} />
-                <button data-color="#3b82f6" class="color-dot" style={{ background: '#3b82f6' }} />
-                <button data-color="#8b5cf6" class="color-dot" style={{ background: '#8b5cf6' }} />
-                <button data-color="#ec4899" class="color-dot" style={{ background: '#ec4899' }} />
-                <button data-color="eraser" class="color-dot eraser" title="橡皮擦">⌫</button>
-              </div>
-              <button id="clear-canvas-btn" class="ghost">清空画板</button>
-            </div>
-            <div class="canvas-wrapper">
-              <canvas id="board" width="700" height="700" />
-              <div id="canvas-overlay" class="canvas-overlay">等待房主开始本轮…</div>
-            </div>
-
-            {/* 答案输入区（房主） */}
-            <div id="host-answer-bar" class="answer-bar" style={{ display: 'none' }}>
-              <label>设置答案（本轮词汇）：</label>
-              <input id="answer-input" placeholder="例如：苹果、闪电、皮卡丘" />
-              <button id="start-drawing-btn" class="primary">确认并开启画板</button>
-              <small class="hint">玩家会在输入正确答案后 +1 分，画板将在命中后锁定。</small>
-            </div>
-
-          </section>
-
-          <aside class="side-section">
-            <div class="panel leaderboard">
-              <h3>积分排行榜</h3>
-              <small>（不含房主）</small>
-              <ol id="leaderboard">
-                <li class="empty">暂无数据</li>
-              </ol>
-            </div>
-
-            <div class="panel chat-panel">
-              <h3>弹幕聊天</h3>
-              <div id="chat" class="chat-box">
-                <div class="message system-message">欢迎进入房间，聊天与答案都实时同步。</div>
-              </div>
-              <div class="chat-input">
-                <input id="chat-input" placeholder="输入消息 / 答案" maxlength={50} autocomplete="off" />
-                <button id="chat-send" class="primary">发送</button>
-              </div>
-            </div>
-          </aside>
-        </main>
       </div>
     </Layout>
   )
@@ -347,38 +309,54 @@ app.get(
         }
       },
       onClose(_evt, ws) {
-        handleDisconnect(ws)
+        removeClient(ws, '连接断开')
       },
       onError(_evt, ws) {
-        handleDisconnect(ws)
+        removeClient(ws, '连接异常')
       },
     }
   })
 )
 
-function handleDisconnect(ws: WSContext<WebSocket>) {
+// 移除一个连接并同步房间状态（用于断线 / 主动退出 / 心跳超时）
+function removeClient(ws: WSContext<WebSocket>, reason: string) {
   const info = clients.get(ws)
   if (!info) return
+  const user = info.user
+  const roomId = info.roomId
   clients.delete(ws)
 
-  if (info.roomId) {
-    const room = rooms.get(info.roomId)
+  if (roomId) {
+    const room = rooms.get(roomId)
     if (room) {
-      room.players.delete(info.user)
-      // 只在该用户没有其他连接时才广播"离开"消息
-      const stillOnline = Array.from(clients.values()).some((ci) => ci.user === info.user && ci.roomId === info.roomId)
-      if (!stillOnline) {
-        const sysMsg: ChatMessage = { user: 'system', text: `${info.user} 离开了房间`, time: nowStr(), isSystem: true }
-        room.chat.push(sysMsg)
-        broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
+      const wasDrawer = room.currentDrawer === user
+      // 若离开的是当前画手，先确定下一位（在移除其顺序前计算）
+      const newDrawer = wasDrawer ? nextDrawer(room, user) : null
+
+      room.players.delete(user)
+      room.turnOrder = room.turnOrder.filter((p) => p !== user)
+      // 同时清除其个人数据，避免昵称被永久占用
+      room.scoreboard = room.scoreboard.filter((s) => s.user !== user)
+
+      const sysMsg: ChatMessage = {
+        user: 'system',
+        text: `${user} 离开了房间（${reason}）`,
+        time: nowStr(),
+        isSystem: true,
       }
-      // 始终同步最新状态
+      room.chat.push(sysMsg)
+      broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
+
+      if (wasDrawer) {
+        room.currentDrawer = newDrawer
+        room.state = 'lobby'
+        room.answer = null
+        room.lastWinner = null
+      }
+
       broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
     }
   }
-
-  // 无论如何都推送最新大厅列表
-  broadcastHallList()
 }
 
 // ============================================================
@@ -394,17 +372,16 @@ function handleMessage(ws: WSContext<WebSocket>, data: any) {
     return
   }
 
+  // 任何已登录消息都刷新心跳
+  if (info) info.lastHeartbeat = Date.now()
+
   switch (type) {
     case 'login':
       return handleLogin(ws, data)
-    case 'list_rooms':
-      return handleListRooms(ws, data)
-    case 'create_room':
-      return handleCreateRoom(ws)
-    case 'join_room':
-      return handleJoinRoom(ws, data)
-    case 'leave_room':
-      return handleLeaveRoom(ws)
+    case 'logout':
+      return handleLogout(ws)
+    case 'ping':
+      return handlePing(ws)
     case 'draw_stroke':
       return handleDrawStroke(ws, data)
     case 'clear_canvas':
@@ -417,8 +394,6 @@ function handleMessage(ws: WSContext<WebSocket>, data: any) {
       return handleSubmitAnswer(ws, data)
     case 'chat':
       return handleChat(ws, data)
-    case 'close_room':
-      return handleCloseRoom(ws)
     default:
       send(ws, { type: 'error', text: `未知消息类型: ${type}`, time: nowStr() })
   }
@@ -440,129 +415,69 @@ function handleLogin(ws: WSContext<WebSocket>, data: { user: string }) {
       return
     }
   }
-  clients.set(ws, { user, roomId: null, ws })
+  const info: ClientInfo = { user, roomId: null, ws, lastHeartbeat: Date.now() }
+  clients.set(ws, info)
   send(ws, { type: 'login_ok', user, onlineCount: clients.size })
-  broadcastHallList()
+
+  // 登录后自动加入唯一房间
+  joinDefaultRoom(ws, info)
 }
 
-function broadcastHallList(kw?: string, toWs?: WSContext<WebSocket>) {
-  const payload = { type: 'room_list', rooms: publicRoomList(kw), onlineCount: clients.size }
-  if (toWs) {
-    send(toWs, payload)
-    return
-  }
-  // 推送给所有处于大厅 / 已登录用户
-  for (const [ws, ci] of clients) {
-    if (!ci.roomId) send(ws, payload)
-  }
-}
-
-function handleListRooms(ws: WSContext<WebSocket>, data: { kw?: string }) {
-  send(ws, { type: 'room_list', rooms: publicRoomList(data.kw) })
-}
-
-function handleCreateRoom(ws: WSContext<WebSocket>) {
-  const info = clients.get(ws)!
-  if (info.roomId) {
-    send(ws, { type: 'error', text: '你已经在一个房间中', time: nowStr() })
-    return
-  }
-  const id = genRoomId()
-  const room: Room = {
-    id,
-    host: info.user,
-    players: new Set([info.user]),
-    state: 'lobby',
-    answer: null,
-    currentDrawer: info.user,
-    canvasHistory: '',
-    lastWinner: null,
-    scoreboard: [],
-    chat: [{ user: 'system', text: `房间 ${id} 已创建，欢迎 ${info.user}！`, time: nowStr(), isSystem: true }],
-    createdAt: Date.now(),
-  }
-  rooms.set(id, room)
-  info.roomId = id
-  send(ws, { type: 'room_joined', roomId: id, isHost: true })
-  send(ws, { type: 'room_state', state: publicRoomState(room) })
-  broadcastHallList()
-}
-
-function handleJoinRoom(ws: WSContext<WebSocket>, data: { roomId: string }) {
-  const info = clients.get(ws)!
-  const roomId = String(data.roomId || '').trim()
-  if (!roomId) {
-    send(ws, { type: 'error', text: '请提供房间 ID', time: nowStr() })
-    return
-  }
-  // 如果该连接已经在目标房间里，直接返回状态即可（支持刷新后自动重建）
-  if (info.roomId === roomId) {
-    const room = rooms.get(roomId)
-    if (room) {
-      send(ws, { type: 'room_joined', roomId, isHost: info.user === room.host })
-      send(ws, { type: 'room_state', state: publicRoomState(room) })
-    }
-    return
-  }
-  // 如果之前在别的房间，先离开
-  if (info.roomId) {
-    const prev = rooms.get(info.roomId)
-    if (prev) prev.players.delete(info.user)
-  }
-  const room = rooms.get(roomId)
-  if (!room) {
-    send(ws, { type: 'error', text: '房间不存在或已关闭', time: nowStr() })
-    return
-  }
+// 自动加入全局唯一房间
+function joinDefaultRoom(ws: WSContext<WebSocket>, info: ClientInfo) {
+  const room = rooms.get(DEFAULT_ROOM_ID)!
+  const isNew = !room.players.has(info.user)
   room.players.add(info.user)
   ensureScore(room, info.user)
-  info.roomId = roomId
-  // 告知本人（是否为房主：房主重连也能恢复）
-  const isHost = info.user === room.host
-  send(ws, { type: 'room_joined', roomId, isHost })
-  send(ws, { type: 'room_state', state: publicRoomState(room) })
-  // 只在用户是新加入时（而不是刷新重连）广播"加入"消息
-  const alreadyPresent = Array.from(clients.values()).some((ci) => ci !== info && ci.user === info.user && ci.roomId === roomId)
-  if (!alreadyPresent) {
-    const sysMsg: ChatMessage = { user: 'system', text: `${info.user} 加入了房间`, time: nowStr(), isSystem: true }
-    room.chat.push(sysMsg)
-    broadcastToRoom(roomId, { type: 'chat_msg', msg: sysMsg })
+  if (isNew && !room.turnOrder.includes(info.user)) {
+    room.turnOrder.push(info.user)
   }
-  broadcastToRoom(roomId, { type: 'room_state', state: publicRoomState(room) })
-  broadcastHallList()
-}
+  info.roomId = DEFAULT_ROOM_ID
 
-function handleLeaveRoom(ws: WSContext<WebSocket>) {
-  const info = clients.get(ws)!
-  if (!info.roomId) return
-  const room = rooms.get(info.roomId)
-  info.roomId = null
-  if (!room) return
+  // 若该房间当前没有有效画手，新加入者即成为画手
+  if (!room.currentDrawer || !room.players.has(room.currentDrawer)) {
+    room.currentDrawer = info.user
+    room.state = 'lobby'
+    room.answer = null
+    room.canvasHistory = ''
+    room.lastWinner = null
+  }
 
-  if (room.host === info.user) {
-    // 房主离开 = 关闭房间（handleDisconnect 也处理了，这里保持一致）
-    broadcastToRoom(room.id, { type: 'system', text: `房主 ${info.user} 已离开，房间解散。`, time: nowStr() })
-    broadcastToRoom(room.id, { type: 'room_closed', reason: 'host_left' })
-    for (const [, ci] of clients) {
-      if (ci.roomId === room.id) ci.roomId = null
+  const isDrawer = room.currentDrawer === info.user
+  send(ws, { type: 'room_joined', roomId: DEFAULT_ROOM_ID, isDrawer })
+
+  // 仅在用户是新加入时（而不是刷新重连）广播"加入"消息
+  const alreadyPresent = Array.from(clients.values()).some(
+    (ci) => ci !== info && ci.user === info.user && ci.roomId === DEFAULT_ROOM_ID
+  )
+  if (!alreadyPresent) {
+    const sysMsg: ChatMessage = {
+      user: 'system',
+      text: `${info.user} 进入了房间`,
+      time: nowStr(),
+      isSystem: true,
     }
-    rooms.delete(room.id)
-  } else {
-    room.players.delete(info.user)
-    ensureScore(room, info.user)
-    const sysMsg: ChatMessage = { user: 'system', text: `${info.user} 离开了房间`, time: nowStr(), isSystem: true }
     room.chat.push(sysMsg)
     broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
-    broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
   }
-  broadcastHallList()
+  broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
+}
+
+function handleLogout(ws: WSContext<WebSocket>) {
+  removeClient(ws, '主动退出')
+  send(ws, { type: 'logged_out' })
+}
+
+function handlePing(ws: WSContext<WebSocket>) {
+  // 心跳：刷新时间已由 handleMessage 统一处理，这里回 pong 维持连接健康
+  send(ws, { type: 'pong', time: nowStr() })
 }
 
 function handleDrawStroke(ws: WSContext<WebSocket>, data: { stroke: string }) {
   const info = clients.get(ws)!
   const room = info.roomId && rooms.get(info.roomId)
   if (!room) return
-  if (room.host !== info.user) return // 只有房主能画
+  if (room.currentDrawer !== info.user) return // 只有当前画手能画
   if (room.state !== 'drawing') return
   room.canvasHistory += (room.canvasHistory ? '\n' : '') + String(data.stroke || '')
   broadcastToRoom(room.id, { type: 'canvas_stroke', stroke: data.stroke, from: info.user })
@@ -572,7 +487,7 @@ function handleClearCanvas(ws: WSContext<WebSocket>) {
   const info = clients.get(ws)!
   const room = info.roomId && rooms.get(info.roomId)
   if (!room) return
-  if (room.host !== info.user) return
+  if (room.currentDrawer !== info.user) return
   room.canvasHistory = ''
   broadcastToRoom(room.id, { type: 'canvas_clear' })
 }
@@ -581,7 +496,7 @@ function handleSetAnswer(ws: WSContext<WebSocket>, data: { answer: string }) {
   const info = clients.get(ws)!
   const room = info.roomId && rooms.get(info.roomId)
   if (!room) return
-  if (room.host !== info.user) return
+  if (room.currentDrawer !== info.user) return
   const answer = String(data.answer || '').trim()
   if (!answer) {
     send(ws, { type: 'error', text: '答案不能为空', time: nowStr() })
@@ -595,7 +510,7 @@ function handleStartDrawing(ws: WSContext<WebSocket>) {
   const info = clients.get(ws)!
   const room = info.roomId && rooms.get(info.roomId)
   if (!room) return
-  if (room.host !== info.user) return
+  if (room.currentDrawer !== info.user) return
   if (!room.answer) {
     send(ws, { type: 'error', text: '请先设置答案', time: nowStr() })
     return
@@ -614,7 +529,7 @@ function handleStartDrawing(ws: WSContext<WebSocket>) {
   broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
   broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
   broadcastToRoom(room.id, { type: 'canvas_clear' })
-  broadcastToRoom(room.id, { type: 'drawing_start', drawer: room.host })
+  broadcastToRoom(room.id, { type: 'drawing_start', drawer: room.currentDrawer })
 }
 
 function handleSubmitAnswer(ws: WSContext<WebSocket>, data: { text: string }) {
@@ -624,7 +539,7 @@ function handleSubmitAnswer(ws: WSContext<WebSocket>, data: { text: string }) {
   const text = String(data.text || '').trim()
   if (!text) return
 
-  // 1) 先作为聊天消息广播（房主也能看到玩家在猜什么）
+  // 1) 先作为聊天消息广播（画手也能看到玩家在猜什么）
   const chatMsg: ChatMessage = { user: info.user, text, time: nowStr() }
   room.chat.push(chatMsg)
   broadcastToRoom(room.id, { type: 'chat_msg', msg: chatMsg })
@@ -647,11 +562,11 @@ function handleChat(ws: WSContext<WebSocket>, data: { text: string }) {
   tryAnswer(room, info.user, text)
 }
 
-// 统一的答案判定：drawing 状态、已有答案、非房主、本轮尚未结束
+// 统一的答案判定：drawing 状态、已有答案、非画手、本轮尚未结束
 function tryAnswer(room: Room, user: string, text: string) {
   if (room.state !== 'drawing') return
   if (!room.answer) return
-  if (user === room.host) return
+  if (user === room.currentDrawer) return
   if (room.lastWinner) return // 一轮只算第一个
 
   const ans = room.answer.trim().toLowerCase()
@@ -675,22 +590,48 @@ function tryAnswer(room: Room, user: string, text: string) {
   room.chat.push(sysOk)
   broadcastToRoom(room.id, { type: 'chat_msg', msg: sysOk })
   broadcastToRoom(room.id, { type: 'round_over', winner: user, answer: room.answer })
+
+  // 上一位画手结束 → 自动轮换到下一位画手（按进入房间顺序）
+  advanceToNextDrawer(room)
+}
+
+// 结算后轮换到下一位画手
+function advanceToNextDrawer(room: Room) {
+  const next = nextDrawer(room, room.currentDrawer)
+  room.currentDrawer = next
+  room.state = 'lobby'
+  room.answer = null
+  room.lastWinner = null
+  // 画板保留上一轮的画作，直到新画手开启本轮时清空
+
+  if (next) {
+    const sysMsg: ChatMessage = {
+      user: 'system',
+      text: `轮到 ${next} 出题作画，请在下方设置答案后开启画板。`,
+      time: nowStr(),
+      isSystem: true,
+    }
+    room.chat.push(sysMsg)
+    broadcastToRoom(room.id, { type: 'chat_msg', msg: sysMsg })
+  }
   broadcastToRoom(room.id, { type: 'room_state', state: publicRoomState(room) })
 }
 
-function handleCloseRoom(ws: WSContext<WebSocket>) {
-  const info = clients.get(ws)!
-  const room = info.roomId && rooms.get(info.roomId)
-  if (!room) return
-  if (room.host !== info.user) return
-  broadcastToRoom(room.id, { type: 'system', text: `房主已关闭房间 ${room.id}`, time: nowStr() })
-  broadcastToRoom(room.id, { type: 'room_closed', reason: 'closed_by_host' })
-  for (const [, ci] of clients) {
-    if (ci.roomId === room.id) ci.roomId = null
+// ============================================================
+// 心跳扫描：清除超过 10 分钟无任何消息的卡死连接
+// ============================================================
+setInterval(() => {
+  const now = Date.now()
+  const stale: WSContext<WebSocket>[] = []
+  for (const [ws, info] of clients) {
+    if (now - info.lastHeartbeat > HEARTBEAT_TIMEOUT) {
+      stale.push(ws)
+    }
   }
-  rooms.delete(room.id)
-  broadcastHallList()
-}
+  for (const ws of stale) {
+    removeClient(ws, '心跳超时')
+  }
+}, HEARTBEAT_CHECK_INTERVAL)
 
 // ============================================================
 // 启动服务器
