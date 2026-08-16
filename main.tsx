@@ -119,6 +119,44 @@ const HEARTBEAT_TIMEOUT = 10 * 60 * 1000 // 10 分钟
 const HEARTBEAT_CHECK_INTERVAL = 30 * 1000 // 每 30 秒扫描一次
 
 // ============================================================
+// 后台入口：隐藏入口令牌 + 门禁
+// 只有从首页（点击「猜词游戏」10 次）触发 /admin/grant 才能拿到令牌，
+// 直接访问 /admin 会因缺少该 cookie 被拒绝。
+// ============================================================
+const adminGrants = new Map<string, number>() // token -> 过期时间戳(ms)
+const ADMIN_GRANT_TTL = 10 * 60 * 1000 // 令牌有效期 10 分钟
+
+function genAdminToken(): string {
+  return crypto.randomUUID()
+}
+
+function parseCookies(c: Context): Record<string, string> {
+  const raw = c.req.header('Cookie') || ''
+  const out: Record<string, string> = {}
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=')
+    if (idx < 0) continue
+    const k = part.slice(0, idx).trim()
+    const v = part.slice(idx + 1).trim()
+    if (k) out[k] = decodeURIComponent(v)
+  }
+  return out
+}
+
+// 校验后台访问权限：必须携带有效的 admin_entry cookie
+function requireAdmin(c: Context): boolean {
+  const token = parseCookies(c)['admin_entry']
+  if (!token) return false
+  const exp = adminGrants.get(token)
+  if (!exp) return false
+  if (Date.now() > exp) {
+    adminGrants.delete(token)
+    return false
+  }
+  return true
+}
+
+// ============================================================
 // 工具函数
 // ============================================================
 function nowStr(): string {
@@ -190,6 +228,22 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
   </html>
 )
 
+// 后台管理页布局（与游戏页隔离，独立加载 admin.js / admin.css）
+const AdminLayout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) => (
+  <html>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <link rel="stylesheet" href="/static/css/home.css" />
+    <link rel="stylesheet" href="/static/css/admin.css" />
+    <link rel="icon" href="/static/img/head_img.jpg" />
+    <body>
+      {children}
+      <script src="/static/js/admin.js" />
+    </body>
+  </html>
+)
+
 // 单页：登录面板 + 游戏区（登录后显示）
 app.get('/', (c: Context) => {
   return c.html(
@@ -198,7 +252,7 @@ app.get('/', (c: Context) => {
         {/* 登录面板 */}
         <section id="login-section" class="panel">
           <h1 class="brand">你画我猜</h1>
-          <p class="subtitle">实时多人协作猜词游戏</p>
+          <p class="subtitle">实时多人协作<span id="secret-entry" class="secret-entry" title="彩蛋入口">猜词游戏</span></p>
           <div class="input-row">
             <input id="username" autocomplete="off" placeholder="输入你的昵称" />
             <button id="login-btn" class="primary">进入游戏</button>
@@ -281,6 +335,128 @@ app.get('/', (c: Context) => {
     </Layout>
   )
 })
+
+// ============================================================
+// 后台入口：签发令牌（只有首页隐藏入口会调用）
+// ============================================================
+app.post('/admin/grant', (c: Context) => {
+  const token = genAdminToken()
+  adminGrants.set(token, Date.now() + ADMIN_GRANT_TTL)
+  c.header(
+    'Set-Cookie',
+    `admin_entry=${token}; HttpOnly; Path=/; Max-Age=${Math.floor(ADMIN_GRANT_TTL / 1000)}; SameSite=Lax`
+  )
+  return c.json({ ok: true })
+})
+
+// ============================================================
+// 后台管理页（受门禁保护）
+// ============================================================
+app.get('/admin', (c: Context) => {
+  if (!requireAdmin(c)) {
+    return c.html(
+      '<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>禁止访问</title>' +
+        '<style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;' +
+        'background:#0f172a;color:#e5e7eb;display:flex;align-items:center;justify-content:center;' +
+        'height:100vh;margin:0}div{text-align:center}h1{font-size:32px}small{color:#94a3b8}' +
+        'a{color:#5b5bd6}</style></head><body><div><h1>🚫 403 禁止直接访问</h1>' +
+        '<p>后台管理页只能从首页点击隐藏入口进入。</p>' +
+        '<p><small>请返回首页，连续点击「猜词游戏」10 次以解锁。</small></p>' +
+        '<p><a href="/">← 返回首页</a></p></div></body></html>',
+      403
+    )
+  }
+  return c.html(
+    <AdminLayout title="后台管理 · 你画我猜">
+      <div id="admin-app" class="admin-wrap">
+        <header class="admin-header">
+          <h1>后台管理 · 你画我猜</h1>
+          <button class="ghost" id="back-home" type="button">返回首页</button>
+        </header>
+
+        <section class="panel">
+          <h3>房间状态</h3>
+          <div id="room-status" class="room-status">加载中…</div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h3>
+              在线用户 <span id="online-count" class="badge">0</span>
+            </h3>
+          </div>
+          <ul id="user-list" class="user-list" />
+        </section>
+
+        <section class="panel">
+          <h3>房间控制</h3>
+          <p class="muted">
+            强制重启将踢出所有用户、删除所有用户数据（昵称、积分、绘画顺序）以及房间全部状态，
+            房间回到初始空状态。
+          </p>
+          <button class="danger" id="reset-room-btn" type="button">强制重启房间</button>
+        </section>
+      </div>
+    </AdminLayout>
+  )
+})
+
+// 在线用户 / 房间状态（受门禁保护）
+app.get('/admin/api/state', (c: Context) => {
+  if (!requireAdmin(c)) return c.json({ error: 'forbidden' }, 403)
+  const room = rooms.get(DEFAULT_ROOM_ID)
+  const players = room
+    ? Array.from(room.players).map((u) => ({
+        user: u,
+        isDrawer: room.currentDrawer === u,
+        score: (room.scoreboard.find((s) => s.user === u)?.score) ?? 0,
+      }))
+    : []
+  return c.json({
+    players,
+    room: room
+      ? {
+          id: room.id,
+          state: room.state,
+          currentDrawer: room.currentDrawer,
+          playerCount: room.players.size,
+          scoreboard: room.scoreboard,
+          answerSet: !!room.answer,
+        }
+      : null,
+  })
+})
+
+// 删除指定用户（踢出其连接并清除其房间内个人数据）
+app.post('/admin/api/users/:name/delete', (c: Context) => {
+  if (!requireAdmin(c)) return c.json({ error: 'forbidden' }, 403)
+  const name = decodeURIComponent(c.req.param('name'))
+  const toRemove: WSContext<WebSocket>[] = []
+  for (const [ws, info] of clients) {
+    if (info.user === name && info.roomId === DEFAULT_ROOM_ID) toRemove.push(ws)
+  }
+  toRemove.forEach((ws) => removeClient(ws, '管理员删除'))
+  return c.json({ ok: true, removed: toRemove.length })
+})
+
+// 强制重启房间：踢出所有人 + 清空所有用户数据与房间状态
+app.post('/admin/api/room/reset', (c: Context) => {
+  if (!requireAdmin(c)) return c.json({ error: 'forbidden' }, 403)
+  forceRestartRoom()
+  return c.json({ ok: true })
+})
+
+function forceRestartRoom() {
+  const room = rooms.get(DEFAULT_ROOM_ID)
+  if (room) {
+    const toKick = Array.from(clients.entries())
+      .filter(([, info]) => info.roomId === DEFAULT_ROOM_ID)
+      .map(([ws]) => ws)
+    for (const ws of toKick) removeClient(ws, '管理员强制重启房间')
+  }
+  // 用全新的空房间替换（所有玩家、积分、顺序、画板、答案、聊天均清空）
+  rooms.set(DEFAULT_ROOM_ID, createDefaultRoom())
+}
 
 // 静态资源
 app.use('/static/*', async (c, next) => {

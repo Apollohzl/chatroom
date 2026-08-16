@@ -1,0 +1,103 @@
+/* ============================================================
+ * 后台管理页样式（复用 home.css 的 :root 变量）
+ * ============================================================ */
+.admin-wrap {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 8px 80px;
+}
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.admin-header h1 {
+  font-size: 24px;
+  margin: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.panel-head h3 {
+  margin: 0;
+}
+
+/* 房间状态 */
+.room-status {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 24px;
+  padding: 4px 0;
+}
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--chat-bg);
+  border-radius: 10px;
+  font-size: 14px;
+}
+.status-row .k {
+  color: var(--muted);
+}
+.status-row .v {
+  font-weight: 600;
+}
+
+/* 在线用户列表 */
+.user-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--chat-bg);
+  border-radius: 10px;
+}
+.user-row .u-name {
+  font-weight: 600;
+  flex: 1;
+}
+.user-row .u-score {
+  color: var(--muted);
+  font-size: 13px;
+}
+.badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--muted);
+}
+.badge.drawer {
+  background: var(--primary);
+  color: #fff;
+}
+.del-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .room-status {
+    grid-template-columns: 1fr;
+  }
+}

@@ -476,10 +476,62 @@
   }
 
   // ============================
+  // 隐藏入口：连续点击「猜词游戏」10 次解锁后台
+  // ============================
+  function initSecretEntry() {
+    const el = $('secret-entry')
+    if (!el) return
+    let clicks = 0
+    let unlocked = false
+    const NEED = 10
+    el.addEventListener('click', function () {
+      if (unlocked) return
+      clicks++
+      // 轻微反馈，保持隐蔽
+      el.style.transform = 'scale(0.92)'
+      setTimeout(function () {
+        if (el) el.style.transform = ''
+      }, 100)
+      if (clicks >= NEED) {
+        unlocked = true
+        fetch('/admin/grant', { method: 'POST', credentials: 'same-origin' })
+          .then(function (r) {
+            if (r.ok) {
+              showUnlockToast()
+              setTimeout(function () {
+                window.location.href = '/admin'
+              }, 700)
+            } else {
+              unlocked = false
+              clicks = 0
+            }
+          })
+          .catch(function () {
+            unlocked = false
+            clicks = 0
+          })
+      }
+    })
+  }
+
+  function showUnlockToast() {
+    let t = $('secret-toast')
+    if (!t) {
+      t = document.createElement('div')
+      t.id = 'secret-toast'
+      t.className = 'secret-toast'
+      document.body.appendChild(t)
+    }
+    t.textContent = '🔓 已解锁后台入口…'
+    t.classList.add('show')
+  }
+
+  // ============================
   // 启动
   // ============================
   document.addEventListener('DOMContentLoaded', function () {
     initLogin()
     initGamePage()
+    initSecretEntry()
   })
 })()
