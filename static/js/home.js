@@ -151,6 +151,8 @@
     function fitCanvas() {
       const wrap = canvas.parentElement
       const size = Math.min(wrap.clientWidth, window.innerHeight - 320)
+      // 游戏区隐藏时容器宽度为 0，不要把画板缩成 0（否则白板不可见且无法绘画）
+      if (!size || size <= 0) return
       canvas.style.width = size + 'px'
       canvas.style.height = size + 'px'
     }
@@ -399,6 +401,7 @@
     window.__clearCanvas = clearCanvas
     window.__renderState = renderState
     window.__appendChat = appendChat
+    window.__fitCanvas = fitCanvas
   }
 
   // ============================
@@ -426,6 +429,10 @@
       const gameSection = $('game-section')
       if (loginSection) loginSection.classList.add('hidden')
       if (gameSection) gameSection.classList.remove('hidden')
+      // 游戏区从隐藏变为可见，重新计算画板尺寸（隐藏时容器宽度为 0）
+      requestAnimationFrame(function () {
+        if (window.__fitCanvas) window.__fitCanvas()
+      })
     }
 
     if (data.type === 'room_state' && window.__renderState) {
