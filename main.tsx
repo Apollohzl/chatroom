@@ -826,4 +826,4 @@ try {
   console.log('（无法读取局域网 IP，缺少 --allow-sys 权限；可用 localhost 访问）')
 }
 
-Deno.serve(app.fetch)
+Deno.serve({ port: Number(Deno.env.get('PORT') ?? '8000') }, app.fetch)
